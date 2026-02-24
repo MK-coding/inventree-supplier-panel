@@ -2,15 +2,23 @@ from django.http import HttpResponse
 from django.http import JsonResponse
 from django.urls import re_path
 
-from order.views import PurchaseOrderDetail
+try:
+    # Newer InvenTree versions use view classes from order.views
+    from order.views import PurchaseOrderDetail
+except Exception:
+    from order.api import PurchaseOrderDetail
 from order.models import PurchaseOrder
-from part.views import PartDetail
+try:
+    # Newer InvenTree versions use view classes from part.views
+    from part.views import PartDetail
+except Exception:
+    from part.api import PartDetail
 from part.models import Part
 from plugin import InvenTreePlugin
-from plugin.mixins import PanelMixin, SettingsMixin, UrlsMixin
+from plugin.mixins import UserInterfaceMixin, SettingsMixin, UrlsMixin
 from company.models import Company, ManufacturerPart, SupplierPart
 from company.models import SupplierPriceBreak
-from users.models import check_user_role
+from users.permissions import check_user_role
 from common.models import InvenTreeSetting
 from .version import PLUGIN_VERSION
 from .mouser import Mouser
@@ -23,7 +31,7 @@ import json
 from datetime import datetime
 
 
-class SupplierCartPanel(PanelMixin, SettingsMixin, InvenTreePlugin, UrlsMixin):
+class SupplierCartPanel(UserInterfaceMixin, SettingsMixin, InvenTreePlugin, UrlsMixin):
 
     PurchaseOrderPK = 0
 
@@ -106,6 +114,15 @@ class SupplierCartPanel(PanelMixin, SettingsMixin, InvenTreePlugin, UrlsMixin):
     }
 
 # ----------------------------------------------------------------------------
+# Helper to resolve plugin base URL across InvenTree versions
+    def _get_plugin_base_url(self):
+        if hasattr(self, 'get_base_url'):
+            return self.get_base_url()
+        if hasattr(self, 'base_url'):
+            return self.base_url
+        return f'plugin/{self.SLUG}/'
+
+# ----------------------------------------------------------------------------
 # Here we check the settings and show som status messages. We also construct
 # the Digikey redirect_uri that needs to put into the Digikey web page.
 # If the pk of the supplier is not set ein tne settings, the supplier is
@@ -120,7 +137,7 @@ class SupplierCartPanel(PanelMixin, SettingsMixin, InvenTreePlugin, UrlsMixin):
             base_url_state = '<span class="badge badge-left rounded-pill bg-danger">Server does not run https</span>'
         else:
             base_url_state = '<span class="badge badge-left rounded-pill bg-success">OK</span>'
-        redirect_uri = f'{base_url}/{self.base_url}digikeytoken/'
+        redirect_uri = f'{base_url}/{self._get_plugin_base_url()}digikeytoken/'
         url = f'https://api.digikey.com/v1/oauth2/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}'
         return f"""
         <p>Setup:</p>
@@ -237,7 +254,7 @@ class SupplierCartPanel(PanelMixin, SettingsMixin, InvenTreePlugin, UrlsMixin):
     def receive_authcode(self, request):
         auth_code = request.GET.get('code')
         url = 'https://api.digikey.com/v1/oauth2/token'
-        redirect_uri = InvenTreeSetting.get_setting('INVENTREE_BASE_URL') + '/' + self.base_url + 'digikeytoken/'
+        redirect_uri = InvenTreeSetting.get_setting('INVENTREE_BASE_URL') + '/' + self._get_plugin_base_url() + 'digikeytoken/'
         url_data = {
             'code': auth_code,
             'client_id': self.get_setting('DIGIKEY_CLIENT_ID'),
