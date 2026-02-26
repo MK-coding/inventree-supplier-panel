@@ -373,7 +373,7 @@ class SupplierCartPanel(UserInterfaceMixin, SettingsMixin, InvenTreePlugin, Urls
         return JsonResponse(cart_data)
 
 # ---------------------------- add_supplierpart -------------------------------
-    def add_supplierpart(self, request):
+    def add_supplierpart(self, request, format=None):
         data = json.loads(request.body)
         part = Part.objects.filter(id=data['pk'])[0]
         supplier = Company.objects.filter(id=data['supplier'])[0]
