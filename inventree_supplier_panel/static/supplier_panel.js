@@ -1,4 +1,3 @@
-
 function getCookie(name) {
   if (typeof document === 'undefined') {
     return null;
