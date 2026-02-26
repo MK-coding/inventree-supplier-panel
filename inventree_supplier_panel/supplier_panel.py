@@ -123,6 +123,46 @@ class SupplierCartPanel(UserInterfaceMixin, SettingsMixin, InvenTreePlugin, Urls
         return f'plugin/{self.SLUG}/'
 
 # ----------------------------------------------------------------------------
+# Helper to resolve the underlying object for a view across InvenTree versions
+    def _get_view_object(self, view):
+        try:
+            return view.get_object()
+        except Exception:
+            return None
+
+    def _is_part_purchaseable(self, part):
+        if part is None:
+            return False
+        if hasattr(part, 'purchaseable'):
+            return bool(getattr(part, 'purchaseable'))
+        if hasattr(part, 'purchasable'):
+            return bool(getattr(part, 'purchasable'))
+        return True
+
+    def _get_registered_suppliers(self):
+        suppliers = []
+        for key in self.registered_suppliers:
+            supplier = self.registered_suppliers[key]
+            if supplier.get('is_registered'):
+                suppliers.append({
+                    'pk': supplier.get('pk', 0),
+                    'name': supplier.get('name', key),
+                })
+        return suppliers
+
+    def _update_registered_suppliers(self):
+        for key, setting_name in (
+            ('Mouser', 'MOUSER_PK'),
+            ('Digikey', 'DIGIKEY_PK'),
+            ('Farnell', 'FARNELL_PK'),
+        ):
+            try:
+                self.registered_suppliers[key]['pk'] = int(self.get_setting(setting_name))
+                self.registered_suppliers[key]['is_registered'] = True
+            except Exception:
+                self.registered_suppliers[key]['is_registered'] = False
+
+# ----------------------------------------------------------------------------
 # Here we check the settings and show som status messages. We also construct
 # the Digikey redirect_uri that needs to put into the Digikey web page.
 # If the pk of the supplier is not set ein tne settings, the supplier is
@@ -162,30 +202,57 @@ class SupplierCartPanel(UserInterfaceMixin, SettingsMixin, InvenTreePlugin, Urls
         </a>
         """
 
+    def get_ui_panels(self, request, context, **kwargs):
+        panels = []
+        context = context or {}
+
+        self._update_registered_suppliers()
+
+        target_model = context.get('target_model', None)
+        target_id = context.get('target_id', None)
+
+        if target_model == 'part' and target_id:
+            try:
+                part = Part.objects.get(pk=target_id)
+            except (Part.DoesNotExist, ValueError):
+                part = None
+
+            has_permission = (check_user_role(request.user, 'part', 'change')
+                              or check_user_role(request.user, 'part', 'delete')
+                              or check_user_role(request.user, 'part', 'add'))
+
+            show_panel = False
+            for s in self.registered_suppliers:
+                show_panel = show_panel or self.registered_suppliers[s]['is_registered']
+
+            if part and has_permission and show_panel and self._is_part_purchaseable(part):
+                panels.append({
+                    'key': 'supplier-panel-part',
+                    'title': 'Automatic Supplier parts',
+                    'source': self.plugin_static_file(
+                        'supplier_panel.js'
+                    ),
+                    'icon': 'ti:package:outline',
+                    'context': {
+                        'part_id': part.pk,
+                        'suppliers': self._get_registered_suppliers(),
+                    },
+                })
+
+        return panels
+
 # ----------------------------------------------------------------------------
 # Create the panel that will display on the PurchaseOrder view.
 
     def get_custom_panels(self, view, request):
         panels = []
-        try:
-            self.registered_suppliers['Mouser']['pk'] = int(self.get_setting('MOUSER_PK'))
-            self.registered_suppliers['Mouser']['is_registered'] = True
-        except Exception:
-            self.registered_suppliers['Mouser']['is_registered'] = False
-        try:
-            self.registered_suppliers['Digikey']['pk'] = int(self.get_setting('DIGIKEY_PK'))
-            self.registered_suppliers['Digikey']['is_registered'] = True
-        except Exception:
-            self.registered_suppliers['Digikey']['is_registered'] = False
-        try:
-            self.registered_suppliers['Farnell']['pk'] = int(self.get_setting('FARNELL_PK'))
-            self.registered_suppliers['Farnell']['is_registered'] = True
-        except Exception:
-            self.registered_suppliers['Farnell']['is_registered'] = False
+        self._update_registered_suppliers()
+
+        view_object = self._get_view_object(view)
 
         # For purchase orders: PO transfer
-        if isinstance(view, PurchaseOrderDetail):
-            order = view.get_object()
+        if isinstance(view, PurchaseOrderDetail) or isinstance(view_object, PurchaseOrder):
+            order = view_object if isinstance(view_object, PurchaseOrder) else view.get_object()
             has_permission = (check_user_role(view.request.user, 'purchase_order', 'change')
                               or check_user_role(view.request.user, 'purchase_order', 'delete')
                               or check_user_role(view.request.user, 'purchase_order', 'add'))
@@ -199,15 +266,15 @@ class SupplierCartPanel(UserInterfaceMixin, SettingsMixin, InvenTreePlugin, Urls
                     })
 
         # For parts: Supplier part creation
-        if isinstance(view, PartDetail):
+        if isinstance(view, PartDetail) or isinstance(view_object, Part):
             has_permission = (check_user_role(view.request.user, 'part', 'change')
                               or check_user_role(view.request.user, 'part', 'delete')
                               or check_user_role(view.request.user, 'part', 'add'))
             show_panel = False
             for s in self.registered_suppliers:
                 show_panel = show_panel or self.registered_suppliers[s]['is_registered']
-            part = view.get_object()
-            if has_permission and show_panel and part.purchaseable:
+            part = view_object if isinstance(view_object, Part) else view.get_object()
+            if has_permission and show_panel and self._is_part_purchaseable(part):
                 panels.append({
                     'title': 'Automatic Supplier parts',
                     'icon': 'fa-user',
@@ -228,19 +295,7 @@ class SupplierCartPanel(UserInterfaceMixin, SettingsMixin, InvenTreePlugin, Urls
 # --------------------------- get_partdata ------------------------------------
 # This is just the wrapper that selects the proper supplier dependant function
     def get_partdata(self, supplier, sku, options):
-
-        try:
-            self.registered_suppliers['Mouser']['pk'] = int(self.get_setting('MOUSER_PK'))
-        except Exception:
-            pass
-        try:
-            self.registered_suppliers['Digikey']['pk'] = int(self.get_setting('DIGIKEY_PK'))
-        except Exception:
-            pass
-        try:
-            self.registered_suppliers['Farnell']['pk'] = int(self.get_setting('FARNELL_PK'))
-        except Exception:
-            pass
+        self._update_registered_suppliers()
 
         part_data = {}
         for s in self.registered_suppliers:
